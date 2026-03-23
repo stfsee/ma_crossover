@@ -1,7 +1,7 @@
 # MA Crossover
 Download S&P500 stock data and check for MA20/200 crossings from below to above in the last 10 days.   
 Then check, which sectors are currently strong and filter the ma crossing hits against the strong sectors.   
-   
+Finally check if seasonality is given for the remaining stocks.   
    
 
     ```PowerShell
@@ -10,6 +10,9 @@ Then check, which sectors are currently strong and filter the ma crossing hits a
     .venv\Scripts\Activate.ps1
     python -m pip install --upgrade pip
     pip install -r requirements.txt
+
+# History
+2026-03-23 Seasonality check added
 
 # ToDo
 - add seasonality check   

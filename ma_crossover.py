@@ -1,6 +1,8 @@
 import pandas as pd
 import yfinance as yf
 import numpy as np
+from prophet import Prophet
+from datetime import date
 
 #source: https://github.com/datasets/s-and-p-500-companies/blob/main/data/constituents.csv
 
@@ -27,6 +29,7 @@ sectors_dict = {'Industrials': 'XLI',
 }
 
 # mass download via yfinance
+print("Downloading quotes from yfinance...")
 data = yf.download(tickers, period="1y", group_by='ticker')
 print()
 try:
@@ -95,22 +98,8 @@ sector_etfs = {
     "XLE": "Energy",  # Atomkraft
     "XLV": "Healthcare",
     "XLP": "Consumer Staples",
-    # "^GDAXI" : "DAX",
     "XLU": "Utilities",  # Bergbau
     "XLRE": "Real Estate"
-
-    # Tech:
-#    "XSW": "Software"
-#     "SMH": "Semiconductor",
-#     "^TECDAX" : "TecDAX"
-
-    # Countries
-    # "IWM": "Russell2000",
-    # "^GDAXI" : "DAX",
-    # "FTSEMIB.MI" : "Italy",
-    # "^MDAXI" : "MDAX",
-    # "CN1G.DE" : "Nordic",
-    # "^STOXX50E" : "EU Stoxx 50"
 }
 
 # just for info:
@@ -172,10 +161,88 @@ print(positiv_secors_list)
 
 # filter against strong sectors
 print("\nMA crossings: shares in strong sectors:")
+results_in_strong_sectors = []
 if results:
     for res in results:
         sector = str(df_sp500[df_sp500['Symbol']==res]['GICS Sector'].item())
         if sectors_dict[sector] in positiv_secors_list:
+            results_in_strong_sectors.append(res)
             print(f"{res} - {sector}")
 else:
     print("No hits found.")
+
+print("\nNow checking for seasonality...")
+
+def start_end_for_seaso():
+    today = date.today()
+    last_year_last_date = date(today.year - 1, 12, 31)
+    year_15_before = today.year - 15
+    jan1_15_before = date(year_15_before, 1, 1)
+
+    start = jan1_15_before.strftime("%Y-%m-%d")
+    end = last_year_last_date.strftime("%Y-%m-%d")
+    return start, end
+
+def fit_prophet(df, verbose=False):
+    m = Prophet(yearly_seasonality=True,
+                weekly_seasonality=False,
+                daily_seasonality=False)
+    print("----- Fitting Prophet model ------") if verbose else None
+    m.fit(df)
+    print("----------- Model fitted. ------------") if verbose else None
+    future = m.make_future_dataframe(periods=365) 
+    forecast = m.predict(future)
+    return m, forecast
+
+def create_df_for_seaso(quotes15y):
+    # nach diesem Schema df erzeugen mit ds und y
+    #df_for_seaso = yf.download(ticker,  start=start, end=end, progress=True)
+    if quotes15y.empty:
+        raise RuntimeError(f"No data for {ticker}")
+    # handle multiindex columns (yfinance sometimes returns these)
+    if isinstance(quotes15y.columns, pd.MultiIndex):
+        quotes15y.columns = quotes15y.columns.droplevel(1)
+    price_col = "Adj Close" if "Adj Close" in quotes15y.columns else "Close"
+    price_col = "Close"
+    s = quotes15y[price_col].dropna()
+    # use log-price to make additive seasonal effects easier to interpret (optional)
+    #s = np.log(s)
+    s.name = "y"
+    df_for_seaso = pd.DataFrame({"ds": s.index, "y": s.values})
+    return df_for_seaso
+
+def get_fc_min_max_dates(forecast):
+    fc_idx_min = forecast.yearly.idxmin()
+    fc_idx_max = forecast.yearly.idxmax()
+    fc_min_date = forecast.ds.iloc[fc_idx_min] 
+    fc_max_date = forecast.ds.iloc[fc_idx_max]
+    return fc_min_date, fc_max_date
+
+def today_in_period(fc_min_date, fc_max_date, today=None):
+    today = date.today()
+    # normalize to date
+    fc_min_date = fc_min_date.date()
+    fc_max_date = fc_max_date.date()
+
+    start = date(today.year, fc_min_date.month, fc_min_date.day)
+    end = date(today.year, fc_max_date.month, fc_max_date.day)
+
+    if start > end:
+        start = date(today.year - 1, fc_min_date.month, fc_min_date.day)
+
+    return start <= today <= end, start, end
+
+import logging
+# Suppress INFO-Logs from cmdstanpy and prophet logging
+logging.getLogger("fbprophet").setLevel(logging.ERROR)
+logging.getLogger("cmdstanpy").disabled=True
+
+start_date, end_date = start_end_for_seaso()
+
+for ticker in results_in_strong_sectors:
+    quotes15y = yf.download(ticker,  start=start_date, end=end_date, progress=False)
+    df_for_seaso = create_df_for_seaso(quotes15y)
+    m, forecast = fit_prophet(df_for_seaso, verbose=False)
+    fc_min_date, fc_max_date = get_fc_min_max_dates(forecast)
+    is_in_period, start, end = today_in_period(fc_min_date, fc_max_date)
+    print(f"Seaso for {ticker} from {start} to {end}. Today in seaso period? {is_in_period}")
